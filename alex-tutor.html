@@ -81,6 +81,22 @@
   #send-btn:hover { background: var(--green-dark); }
   #send-btn:disabled { background: var(--surface2); color: var(--text3); cursor: default; }
 
+  #mic-btn {
+    height: 42px; width: 42px; flex: none; font-size: 18px; line-height: 1;
+    border: 0.5px solid var(--border); border-radius: var(--radius-sm);
+    background: var(--surface2); color: var(--text); cursor: pointer;
+    transition: all 0.15s; user-select: none; touch-action: none;
+  }
+  #mic-btn:hover { background: var(--green-light); border-color: var(--green-border); }
+  #mic-btn.recording {
+    background: var(--blue-light); border-color: var(--blue-border);
+    animation: mic-pulse 1s ease-in-out infinite;
+  }
+  @keyframes mic-pulse {
+    0%,100% { box-shadow: 0 0 0 0 rgba(133,183,235,0.55); }
+    50%     { box-shadow: 0 0 0 7px rgba(133,183,235,0); }
+  }
+
   .hint-chips { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; }
   .chip {
     font-size: 12px; color: var(--text2); padding: 4px 10px;
@@ -197,7 +213,8 @@
     </div>
     <div id="correction"></div>
     <div id="input-row">
-      <input id="user-input" type="text" placeholder="Type in English..." autocomplete="off"/>
+      <button id="mic-btn" title="Hold to speak / Зажми и говори">🎤</button>
+      <input id="user-input" type="text" placeholder="Type or hold 🎤 to speak..." autocomplete="off"/>
       <button id="send-btn">Send →</button>
     </div>
   </div>
@@ -409,6 +426,93 @@ async function send() {
     face('happy'); setStatus('ready'); busy = false; $('send-btn').disabled = false; lip(false);
   }
 }
+
+// --- SPEECH RECOGNITION (server-side Whisper, hold-to-talk, авто-язык) ---
+let mediaRecorder = null, audioChunks = [], pressing = false, transcribing = false;
+let micStream = null, recMime = 'audio/webm';
+
+function setupMic() {
+  const micBtn = $('mic-btn');
+  if (!navigator.mediaDevices || !window.MediaRecorder) {  // нет поддержки — прячем кнопку
+    micBtn.style.display = 'none';
+    return;
+  }
+
+  // Микрофон запрашиваем один раз и держим поток — чтобы нажатие стартовало запись мгновенно,
+  // без асинхронной гонки getUserMedia (из-за неё получались пустые 110-байтные клипы).
+  async function ensureStream() {
+    if (micStream) return micStream;
+    micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    return micStream;
+  }
+
+  const start = async (ev) => {
+    ev.preventDefault();
+    if (busy || transcribing || pressing) return;
+    pressing = true;
+    micBtn.classList.add('recording');
+    setStatus('listening');
+    try {
+      await ensureStream();
+    } catch(_) {
+      pressing = false; micBtn.classList.remove('recording'); setStatus('ready');
+      addMsg('Нет доступа к микрофону. Печатай текстом.', 'error');
+      return;
+    }
+    if (!pressing) return;   // отпустили, пока запрашивался доступ — не пишем вхолостую
+
+    recMime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/webm';
+    audioChunks = [];
+    mediaRecorder = new MediaRecorder(micStream, { mimeType: recMime });
+    mediaRecorder.ondataavailable = e => { if (e.data.size) audioChunks.push(e.data); };
+    mediaRecorder.onstop = transcribe;
+    mediaRecorder.start(200);   // сбрасываем чанки каждые 200 мс
+  };
+
+  const stop = (ev) => {
+    ev.preventDefault();
+    if (!pressing) return;
+    pressing = false;
+    micBtn.classList.remove('recording');
+    if (mediaRecorder && mediaRecorder.state === 'recording') {
+      mediaRecorder.stop();          // дальше сработает onstop → transcribe()
+    } else {
+      setStatus('ready');            // запись не успела стартовать
+    }
+  };
+
+  micBtn.addEventListener('pointerdown', start);
+  micBtn.addEventListener('pointerup', stop);
+  micBtn.addEventListener('pointerleave', stop);   // увёл палец/курсор — тоже стоп
+  micBtn.addEventListener('pointercancel', stop);
+}
+
+async function transcribe() {
+  const blob = new Blob(audioChunks, { type: recMime });
+  if (blob.size < 1500) {   // слишком короткий клип — нечего распознавать
+    setStatus('ready');
+    addMsg('Слишком коротко — зажми 🎤 и говори чуть дольше.', 'error');
+    return;
+  }
+  transcribing = true;
+  setStatus('thinking'); face('thinking');
+  try {
+    const res = await fetch('/proxy/stt', { method: 'POST', body: blob });
+    if (!res.ok) { const e = await res.json().catch(()=>({})); throw new Error(e.error?.message || 'HTTP '+res.status); }
+    const data = await res.json();
+    setStatus('ready'); face('happy');
+    if (data.text && data.text.trim()) {
+      $('user-input').value = data.text.trim();   // Whisper уже определил язык (data.language)
+      send();
+    }
+  } catch(e) {
+    setStatus('ready'); face('happy');
+    addMsg('Не удалось распознать речь: ' + e.message, 'error');
+  } finally {
+    transcribing = false;
+  }
+}
+setupMic();
 
 $('send-btn').addEventListener('click', send);
 $('user-input').addEventListener('keydown', e => { if (e.key==='Enter') send(); });

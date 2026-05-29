@@ -29,6 +29,21 @@ DEEPSEEK_KEY = "sk-0743bbd7ff9141109bbb8282d5f5cc22"
 # ElevenLabs ключ — вставь свой (или оставь пустым для Browser TTS)
 ELEVENLABS_KEY = "ВСТАВЬ_СЮДА_ELEVENLABS_KEY"
 
+# Whisper (faster-whisper) — локальное распознавание речи с авто-определением языка.
+# 'base' — быстрее, 'small' — баланс, 'medium'/'large-v3' — точнее (желательно GPU).
+WHISPER_MODEL = 'small'
+
+_whisper = None
+def get_whisper():
+    """Лениво грузим модель один раз при первом запросе на распознавание."""
+    global _whisper
+    if _whisper is None:
+        from faster_whisper import WhisperModel
+        print(f'  ⏳ Загружаю Whisper "{WHISPER_MODEL}" (первый раз — может скачаться модель)...', file=sys.stderr)
+        _whisper = WhisperModel(WHISPER_MODEL, device='cpu', compute_type='int8')
+        print('  ✓ Whisper готов', file=sys.stderr)
+    return _whisper
+
 class ProxyHandler(http.server.SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=DIRECTORY, **kwargs)
@@ -46,6 +61,8 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
     def do_POST(self):
         if self.path == '/proxy/chat':
             self._handle_anthropic()
+        elif self.path == '/proxy/stt':
+            self._handle_stt()
         elif self.path.startswith('/proxy/elevenlabs/'):
             voice_id = self.path.replace('/proxy/elevenlabs/', '')
             length = int(self.headers.get('Content-Length', 0))
@@ -169,6 +186,42 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
             self.wfile.write(err)
+
+    def _handle_stt(self):
+        import tempfile
+        length = int(self.headers.get('Content-Length', 0))
+        audio = self.rfile.read(length)
+
+        # Whisper читает файл, поэтому пишем blob во временный .webm
+        with tempfile.NamedTemporaryFile(suffix='.webm', delete=False) as f:
+            f.write(audio)
+            path = f.name
+
+        print(f'  → Whisper ({len(audio)} bytes)', file=sys.stderr)
+        try:
+            model = get_whisper()
+            # language=None → авто-определение языка (ru / en и т.д.)
+            segments, info = model.transcribe(path, language=None, beam_size=1)
+            text = ''.join(seg.text for seg in segments).strip()
+            print(f'  ✓ [{info.language}] {text!r}', file=sys.stderr)
+
+            resp_bytes = json.dumps({"text": text, "language": info.language}).encode()
+            self.send_response(200)
+            self.add_cors()
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(resp_bytes)))
+            self.end_headers()
+            self.wfile.write(resp_bytes)
+        except Exception as e:
+            print(f'  ✗ {e}', file=sys.stderr)
+            err = json.dumps({"error": {"type": "error", "message": str(e)}}).encode()
+            self.send_response(500)
+            self.add_cors()
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(err)
+        finally:
+            os.unlink(path)
 
     def _forward_elevenlabs(self, voice_id, body):
         if not ELEVENLABS_KEY or 'ВСТАВЬ' in ELEVENLABS_KEY:
