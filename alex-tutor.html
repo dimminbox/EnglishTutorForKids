@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Lily — AI English Tutor</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@300;400;500;600&display=swap" rel="stylesheet"/>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #f7f5f0; --surface: #ffffff; --surface2: #f0ede6;
+    --border: rgba(0,0,0,0.1); --text: #1a1a1a; --text2: #6b6b6b; --text3: #a0a0a0;
+    --green: #1D9E75; --green-light: #E1F5EE; --green-dark: #0F6E56; --green-border: #9FE1CB;
+    --amber: #FAEEDA; --amber-border: #FAC775; --amber-text: #633806;
+    --purple-light: #EEEDFE; --purple-border: #AFA9EC; --purple-text: #534AB7;
+    --blue-light: #E6F1FB; --blue-border: #85B7EB; --blue-text: #185FA5;
+    --radius: 12px; --radius-sm: 8px;
+  }
+  body {
+    font-family: 'Sora', sans-serif; background: var(--bg); color: var(--text);
+    min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 2rem 1rem;
+  }
+  .container { width: 100%; max-width: 460px; display: flex; flex-direction: column; align-items: center; gap: 1.25rem; }
+
+  /* BADGE */
+  .badge {
+    font-size: 11px; font-weight: 500; letter-spacing: 0.06em; text-transform: uppercase;
+    padding: 4px 14px; border-radius: 20px; border: 0.5px solid var(--border);
+    background: var(--surface2); color: var(--text2); transition: all 0.2s;
+  }
+  .badge.speaking { color: var(--green-dark); border-color: var(--green-border); background: var(--green-light); }
+  .badge.thinking { color: var(--purple-text); border-color: var(--purple-border); background: var(--purple-light); }
+  .badge.listening { color: var(--blue-text); border-color: var(--blue-border); background: var(--blue-light); }
+
+  /* VOICE TOGGLE */
+  .voice-toggle {
+    display: flex; border: 0.5px solid var(--border); border-radius: 20px;
+    overflow: hidden; background: var(--surface2);
+  }
+  .v-opt {
+    font-size: 11px; font-weight: 500; padding: 5px 12px; cursor: pointer;
+    color: var(--text3); background: transparent; border: none;
+    font-family: 'Sora', sans-serif; transition: all 0.15s;
+  }
+  .v-opt.active { background: var(--green); color: white; }
+
+  /* CHAT */
+  #chat-box {
+    width: 100%; background: var(--surface); border: 0.5px solid var(--border);
+    border-radius: var(--radius); padding: 1rem; display: flex; flex-direction: column; gap: 10px;
+  }
+  #messages {
+    display: flex; flex-direction: column; gap: 8px;
+    min-height: 100px; max-height: 220px; overflow-y: auto; padding-right: 4px;
+  }
+  #messages::-webkit-scrollbar { width: 3px; }
+  #messages::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+  .msg { padding: 10px 14px; border-radius: var(--radius); font-size: 14px; line-height: 1.6; max-width: 90%; }
+  .msg.ai  { background: var(--surface2); color: var(--text); align-self: flex-start; border: 0.5px solid var(--border); }
+  .msg.user { background: var(--green-light); color: #085041; align-self: flex-end; border: 0.5px solid var(--green-border); }
+  .msg.error { background: #FCEBEB; color: #A32D2D; align-self: flex-start; border: 0.5px solid #F7C1C1; font-size: 13px; }
+
+  #correction {
+    display: none; padding: 10px 14px; border-radius: var(--radius-sm);
+    border: 0.5px solid var(--amber-border); background: var(--amber);
+    color: var(--amber-text); font-size: 13px; line-height: 1.5;
+  }
+  #input-row { display: flex; gap: 8px; }
+  #user-input {
+    flex: 1; height: 42px; padding: 0 14px; font-size: 14px; font-family: 'Sora', sans-serif;
+    border: 0.5px solid var(--border); border-radius: var(--radius-sm);
+    background: var(--surface2); color: var(--text); outline: none;
+  }
+  #user-input:focus { border-color: var(--green); box-shadow: 0 0 0 2px var(--green-light); }
+  #send-btn {
+    height: 42px; padding: 0 18px; font-size: 14px; font-weight: 500; font-family: 'Sora', sans-serif;
+    background: var(--green); color: white; border: none; border-radius: var(--radius-sm);
+    cursor: pointer; transition: background 0.15s;
+  }
+  #send-btn:hover { background: var(--green-dark); }
+  #send-btn:disabled { background: var(--surface2); color: var(--text3); cursor: default; }
+
+  .hint-chips { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; }
+  .chip {
+    font-size: 12px; color: var(--text2); padding: 4px 10px;
+    border: 0.5px solid var(--border); border-radius: 20px;
+    background: var(--surface); cursor: pointer; transition: all 0.15s;
+  }
+  .chip:hover { background: var(--green-light); color: var(--green-dark); border-color: var(--green-border); }
+
+  footer { font-size: 11px; color: var(--text3); text-align: center; }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <!-- AVATAR -->
+  <div id="scene">
+    <svg width="220" height="280" viewBox="0 0 440 380" xmlns="http://www.w3.org/2000/svg">
+    <style>
+      @keyframes girl-bob { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-5px)} }
+      @keyframes girl-blink { 0%,90%,100%{transform:scaleY(0)} 95%{transform:scaleY(1)} }
+      @keyframes girl-sway-l { 0%,100%{transform:rotate(0deg)} 50%{transform:rotate(1.5deg)} }
+      @keyframes girl-sway-r { 0%,100%{transform:rotate(0deg)} 50%{transform:rotate(-1.5deg)} }
+      #girl-body { animation: girl-bob 3.5s ease-in-out infinite; transform-origin: 220px 180px; }
+      #left-lid  { animation: girl-blink 4.5s ease-in-out infinite;       transform-origin: 193px 158px; transform: scaleY(0); }
+      #right-lid { animation: girl-blink 4.5s ease-in-out infinite 0.06s; transform-origin: 247px 158px; transform: scaleY(0); }
+      #strand-l  { animation: girl-sway-l 3.5s ease-in-out infinite; transform-origin: 168px 185px; }
+      #strand-r  { animation: girl-sway-r 3.5s ease-in-out infinite 0.4s; transform-origin: 272px 185px; }
+    </style>
+    <g id="girl-body">
+      <!-- body -->
+      <rect x="173" y="248" width="94" height="80" rx="18" fill="#5b9cf6"/>
+      <path d="M196 250 L220 268 L244 250 Q236 244 220 242 Q204 244 196 250Z" fill="white" opacity="0.25"/>
+      <rect x="148" y="254" width="28" height="58" rx="14" fill="#5b9cf6"/>
+      <rect x="264" y="254" width="28" height="58" rx="14" fill="#5b9cf6"/>
+      <ellipse cx="162" cy="314" rx="13" ry="12" fill="#ffe0b2"/>
+      <ellipse cx="278" cy="314" rx="13" ry="12" fill="#ffe0b2"/>
+      <!-- neck -->
+      <rect x="208" y="222" width="24" height="30" rx="9" fill="#ffe0b2"/>
+      <!-- hair back -->
+      <ellipse cx="220" cy="155" rx="82" ry="88" fill="#f5c842"/>
+      <!-- head -->
+      <ellipse cx="220" cy="155" rx="70" ry="76" fill="#ffe0b2"/>
+      <!-- hair sides -->
+      <g id="strand-l">
+        <path d="M152 148 Q138 178 141 214 Q143 234 146 254" stroke="#f5c842" stroke-width="20" fill="none" stroke-linecap="round"/>
+        <path d="M152 148 Q138 178 141 214 Q143 234 146 254" stroke="#e8b830" stroke-width="8" fill="none" stroke-linecap="round" opacity="0.4"/>
+      </g>
+      <g id="strand-r">
+        <path d="M288 148 Q302 178 299 214 Q297 234 294 254" stroke="#f5c842" stroke-width="20" fill="none" stroke-linecap="round"/>
+        <path d="M288 148 Q302 178 299 214 Q297 234 294 254" stroke="#e8b830" stroke-width="8" fill="none" stroke-linecap="round" opacity="0.4"/>
+      </g>
+      <!-- hair front -->
+      <path d="M152 152 Q154 78 220 70 Q286 78 288 152 Q272 100 220 98 Q168 100 152 152Z" fill="#f5c842"/>
+      <path d="M184 79 Q202 72 220 70 Q196 76 181 90Z" fill="#fde68a" opacity="0.7"/>
+      <!-- ears -->
+      <ellipse cx="150" cy="160" rx="9" ry="11" fill="#ffe0b2"/>
+      <ellipse cx="290" cy="160" rx="9" ry="11" fill="#ffd0a0"/>
+      <!-- cheeks -->
+      <ellipse cx="180" cy="178" rx="20" ry="13" fill="#ffb0a0" opacity="0.4"/>
+      <ellipse cx="260" cy="178" rx="20" ry="13" fill="#ffb0a0" opacity="0.4"/>
+      <!-- brows -->
+      <rect x="175" y="126" width="34" height="6" rx="3" fill="#c8960a"/>
+      <rect x="231" y="126" width="34" height="6" rx="3" fill="#c8960a"/>
+      <!-- eyes white -->
+      <ellipse cx="193" cy="155" rx="18" ry="20" fill="white"/>
+      <ellipse cx="247" cy="155" rx="18" ry="20" fill="white"/>
+      <!-- iris -->
+      <ellipse cx="193" cy="156" rx="12" ry="13" fill="#2196f3"/>
+      <ellipse cx="247" cy="156" rx="12" ry="13" fill="#2196f3"/>
+      <ellipse cx="193" cy="156" rx="12" ry="13" fill="#1565c0" opacity="0.4"/>
+      <ellipse cx="247" cy="156" rx="12" ry="13" fill="#1565c0" opacity="0.4"/>
+      <!-- pupil -->
+      <ellipse cx="193" cy="157" rx="6" ry="7" fill="#0d1b2a"/>
+      <ellipse cx="247" cy="157" rx="6" ry="7" fill="#0d1b2a"/>
+      <!-- catchlights -->
+      <ellipse cx="196" cy="152" rx="3.5" ry="3" fill="white"/>
+      <ellipse cx="250" cy="152" rx="3.5" ry="3" fill="white"/>
+      <ellipse cx="190" cy="161" rx="1.5" ry="1.2" fill="white" opacity="0.5"/>
+      <ellipse cx="244" cy="161" rx="1.5" ry="1.2" fill="white" opacity="0.5"/>
+      <!-- lash line -->
+      <path d="M175 140 Q193 133 211 140" stroke="#0d1b2a" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+      <path d="M229 140 Q247 133 265 140" stroke="#0d1b2a" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+      <!-- blink lids -->
+      <ellipse id="left-lid"  cx="193" cy="155" rx="18" ry="20" fill="#ffe0b2"/>
+      <ellipse id="right-lid" cx="247" cy="155" rx="18" ry="20" fill="#ffe0b2"/>
+      <!-- nose -->
+      <path id="mouth" d="M215 185 Q220 191 225 185" stroke="#d4906a" stroke-width="1.8" fill="none" stroke-linecap="round"/>
+      <!-- mouth -->
+      <path id="mouth" d="M204 207 Q220 220 236 207" stroke="#e07060" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+      <path id="mouth-open" d="M206 207 Q220 222 234 207 Q228 216 220 218 Q212 216 206 207Z" fill="#b03020" opacity="0"/>
+      <!-- think dots -->
+      <g id="think-dots" opacity="0">
+        <circle cx="300" cy="118" r="5" fill="#AFA9EC"/>
+        <circle cx="316" cy="104" r="4" fill="#CECBF6"/>
+        <circle cx="328" cy="92"  r="3" fill="#EEEDFE"/>
+      </g>
+    </g>
+    </svg>
+  </div>
+
+  <span id="badge" class="badge">ready</span>
+
+  <!-- VOICE TOGGLE -->
+  <div class="voice-toggle">
+    <button class="v-opt active" id="opt-browser" onclick="setVoiceMode('browser')">Browser TTS</button>
+    <button class="v-opt" id="opt-eleven" onclick="setVoiceMode('eleven')">ElevenLabs (Rachel)</button>
+    <button class="v-opt" id="opt-mute" onclick="setVoiceMode('mute')">Mute</button>
+  </div>
+
+  <!-- CHAT -->
+  <div id="chat-box">
+    <div id="messages">
+      <div class="msg ai">Hi! I'm Lily, your English tutor 👋 What would you like to talk about today?</div>
+    </div>
+    <div id="correction"></div>
+    <div id="input-row">
+      <input id="user-input" type="text" placeholder="Type in English..." autocomplete="off"/>
+      <button id="send-btn">Send →</button>
+    </div>
+  </div>
+
+  <div class="hint-chips">
+    <span class="chip" onclick="setInput('Tell me about yourself')">Tell me about yourself</span>
+    <span class="chip" onclick="setInput('I goed to store yesterday')">Test correction</span>
+    <span class="chip" onclick="setInput('Can we practice past tense?')">Practice grammar</span>
+    <span class="chip" onclick="setInput('What is difference between since and for?')">since vs for</span>
+  </div>
+
+  <footer>Lily Tutor · keys live in server.py</footer>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const ELEVEN_VOICE_ID = '21m00Tcm4TlvDq8ikWAM'; // Rachel
+let voiceMode = 'browser';
+let busy = false, blinkTimer, lipTimer, currentUtterance = null;
+let history = [];
+
+const SYSTEM = `You are Lily, a friendly English language tutor. Rules:
+1. By default, reply in English to help the user practice.
+2. If the user writes in Russian or asks you to speak Russian — switch to Russian and stay in Russian until they ask to switch back.
+3. Keep replies SHORT (2-3 sentences max).
+4. If the user made a grammar or spelling mistake in English, add on a new line exactly: CORRECTION: [short friendly explanation in the language you are currently using]
+5. Do NOT add CORRECTION for Russian messages.
+6. Be warm, encouraging and patient.`;
+
+function setVoiceMode(mode) {
+  voiceMode = mode;
+  ['browser','eleven','mute'].forEach(m => $('opt-'+m).classList.toggle('active', m === mode));
+}
+
+// --- ANIMATION ---
+// Blink handled by CSS animation on #left-lid / #right-lid
+function startBlink() {} // no-op, CSS handles it
+
+function lip(on) {
+  clearInterval(lipTimer);
+  const m = $('mouth'), mo = $('mouth-open');
+  if (!on) { m.setAttribute('d','M204 207 Q220 220 236 207'); mo.setAttribute('opacity','0'); return; }
+  let open = false;
+  lipTimer = setInterval(() => {
+    open = !open;
+    if (open) { mo.setAttribute('opacity','1'); mo.setAttribute('d','M206 205 Q220 224 234 205'); m.setAttribute('d','M206 205 Q220 200 234 205'); }
+    else { mo.setAttribute('opacity','0.2'); m.setAttribute('d','M204 207 Q220 220 236 207'); }
+  }, 110 + Math.random()*60);
+}
+
+function face(state) {
+  const td = $('think-dots');
+  if (!td) return;
+  td.setAttribute('opacity', state === 'thinking' ? '1' : '0');
+}
+
+function setStatus(s) {
+  const b = $('badge');
+  b.className = 'badge ' + s;
+  b.textContent = {ready:'ready', thinking:'thinking...', speaking:'speaking'}[s] || s;
+}
+
+function addMsg(text, role) {
+  const el = document.createElement('div');
+  el.className = 'msg ' + role;
+  el.textContent = text;
+  $('messages').appendChild(el);
+  $('messages').scrollTop = $('messages').scrollHeight;
+}
+
+function setInput(text) { $('user-input').value = text; $('user-input').focus(); }
+
+// --- VOICE ---
+
+// Detect language of text (Russian or English)
+function detectLang(text) {
+  const ruChars = (text.match(/[а-яёА-ЯЁ]/g) || []).length;
+  const enChars = (text.match(/[a-zA-Z]/g) || []).length;
+  return ruChars > enChars ? 'ru' : 'en';
+}
+
+// Split mixed text into segments by language
+function splitByLang(text) {
+  const segments = [];
+  // Split on boundaries between cyrillic and latin word groups
+  const parts = text.split(/(?<=[а-яёА-ЯЁ\s])(?=[a-zA-Z«»"'])|(?<=[a-zA-Z»"'\s])(?=[а-яёА-ЯЁ])/);
+  for (const part of parts) {
+    if (!part.trim()) continue;
+    const ruCount = (part.match(/[а-яёА-ЯЁ]/g) || []).length;
+    const enCount = (part.match(/[a-zA-Z]/g) || []).length;
+    const lang = ruCount >= enCount ? 'ru' : 'en';
+    // merge with previous if same lang
+    if (segments.length && segments[segments.length-1].lang === lang) {
+      segments[segments.length-1].text += part;
+    } else {
+      segments.push({ lang, text: part });
+    }
+  }
+  return segments.length ? segments : [{ lang: detectLang(text), text }];
+}
+
+function speakBrowser(text, onEnd) {
+  if (!window.speechSynthesis) { onEnd(); return; }
+  window.speechSynthesis.cancel();
+
+  const voices = window.speechSynthesis.getVoices();
+  const ruVoice = voices.find(v => v.lang === 'ru-RU' && v.name.includes('Google'))
+    || voices.find(v => v.lang === 'ru-RU')
+    || voices.find(v => v.lang.startsWith('ru'));
+  const enVoice = voices.find(v => v.lang.startsWith('en') && v.name.includes('Google'))
+    || voices.find(v => v.lang === 'en-US')
+    || voices.find(v => v.lang.startsWith('en'));
+
+  const segments = splitByLang(text);
+  let i = 0;
+
+  function speakNext() {
+    if (i >= segments.length) { lip(false); onEnd(); return; }
+    const seg = segments[i++];
+    const utt = new SpeechSynthesisUtterance(seg.text);
+    utt.rate = 0.95; utt.pitch = 1.05;
+    // Use English voice only for clearly English segments, Russian for everything else
+    const hasEnglish = (seg.text.match(/[a-zA-Z]/g) || []).length > 3;
+    if (seg.lang === 'en' && hasEnglish && enVoice) {
+      utt.lang = 'en-US';
+      utt.voice = enVoice;
+    } else {
+      utt.lang = 'ru-RU';
+      if (ruVoice) utt.voice = ruVoice;
+    }
+    utt.onstart = () => lip(true);
+    utt.onend = speakNext;
+    utt.onerror = speakNext;
+    window.speechSynthesis.speak(utt);
+  }
+
+  speakNext();
+}
+
+async function speakElevenLabs(text, onEnd) {
+  const lang = detectLang(text);
+  // ElevenLabs multilingual model handles both ru and en automatically
+  try {
+    const res = await fetch(`/proxy/elevenlabs/${ELEVEN_VOICE_ID}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        text,
+        model_id: 'eleven_multilingual_v2',
+        voice_settings: { stability: 0.5, similarity_boost: 0.8 }
+      })
+    });
+    if (!res.ok) throw new Error('ElevenLabs ' + res.status);
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const audio = new Audio(url);
+    audio.onplay = () => lip(true);
+    audio.onended = () => { lip(false); URL.revokeObjectURL(url); onEnd(); };
+    audio.onerror = () => { lip(false); onEnd(); };
+    await audio.play();
+  } catch(e) {
+    console.warn('ElevenLabs failed, falling back:', e.message);
+    speakBrowser(text, onEnd);
+  }
+}
+
+function speak(text, onEnd) {
+  if (voiceMode === 'mute') { lip(true); setTimeout(() => { lip(false); onEnd(); }, Math.max(1400, text.length*50)); return; }
+  if (voiceMode === 'eleven') { speakElevenLabs(text, onEnd); return; }
+  speakBrowser(text, onEnd);
+}
+
+// --- SEND ---
+async function send() {
+  if (busy) return;
+  const text = $('user-input').value.trim();
+  if (!text) return;
+  $('user-input').value = '';
+  $('correction').style.display = 'none';
+  addMsg(text, 'user');
+  history.push({ role: 'user', content: text });
+  busy = true; $('send-btn').disabled = true;
+  setStatus('thinking'); face('thinking');
+
+  try {
+    const res = await fetch('/proxy/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ system: SYSTEM, messages: history })
+    });
+    if (!res.ok) { const e = await res.json(); throw new Error(e.error?.message || 'HTTP '+res.status); }
+
+    const data = await res.json();
+    const full = data.content.map(b => b.text||'').join('');
+    history.push({ role: 'assistant', content: full });
+
+    let reply = full, correction = null;
+    const ci = full.indexOf('CORRECTION:');
+    if (ci !== -1) { reply = full.slice(0, ci).trim(); correction = full.slice(ci+11).trim(); }
+
+    addMsg(reply, 'ai');
+    if (correction) { $('correction').style.display = 'block'; $('correction').textContent = '✏️ ' + correction; }
+    setStatus('speaking'); face('speaking');
+
+    speak(reply, () => { face('happy'); setStatus('ready'); busy = false; $('send-btn').disabled = false; });
+
+  } catch(e) {
+    addMsg('Error: ' + e.message, 'error');
+    face('happy'); setStatus('ready'); busy = false; $('send-btn').disabled = false; lip(false);
+  }
+}
+
+$('send-btn').addEventListener('click', send);
+$('user-input').addEventListener('keydown', e => { if (e.key==='Enter') send(); });
+if (window.speechSynthesis) {
+  window.speechSynthesis.getVoices();
+  window.speechSynthesis.addEventListener('voiceschanged', () => window.speechSynthesis.getVoices());
+}
+startBlink();
+face('happy');
+</script>
+</body>
+</html>
