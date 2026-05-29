@@ -212,6 +212,12 @@
     <button class="v-opt" id="be-claude" onclick="setBackend('claude')">Claude Code</button>
   </div>
 
+  <!-- STT ENGINE -->
+  <div class="voice-toggle" id="stt-toggle">
+    <button class="v-opt active" id="stt-whisper" onclick="setStt('whisper')">🎙 Whisper (локально)</button>
+    <button class="v-opt" id="stt-deepgram" onclick="setStt('deepgram')">🎙 Deepgram (облако)</button>
+  </div>
+
   <!-- CHAT -->
   <div id="chat-box">
     <div id="messages">
@@ -240,23 +246,33 @@ const $ = id => document.getElementById(id);
 const ELEVEN_VOICE_ID = '21m00Tcm4TlvDq8ikWAM'; // Rachel
 let voiceMode = 'browser';
 let backend = 'deepseek';   // 'deepseek' | 'claude' — переключается тумблером
+let sttEngine = 'whisper';  // 'whisper' | 'deepgram' — движок распознавания речи
 let busy = false, blinkTimer, lipTimer, currentUtterance = null;
 let history = [];
 
-const SYSTEM = `You are Lily, a warm and patient English tutor for CHILDREN. Rules:
+const SYSTEM = `You are Lily — a girl, a warm and patient English tutor for CHILDREN. You are female: always refer to yourself in the feminine. When you speak or write in Russian, use feminine grammatical forms about yourself («я рада», «я сказала», «я думаю», never «рад»/«сказал»). Rules:
 1. Hold the conversation in SIMPLE English so the child keeps practicing. Use easy words and short sentences (1-2 sentences max).
 2. If the child writes in Russian or asks you to speak Russian — switch to Russian and stay in Russian until they ask to switch back.
-3. CORRECTIONS — the most important rule. If the child makes ANY mistake in their English (grammar, verb tense, word choice, word order, or spelling), you MUST append on a new line, in exactly this format:
-CORRECTION: <объяснение НА РУССКОМ ЯЗЫКЕ>
-The Russian explanation must, in 1-2 simple kid-friendly sentences: (a) quote the wrong phrase, (b) give the correct English version, (c) briefly say why. Example:
-CORRECTION: Ты сказал «I goed to school». Правильно — «I went to school». Глагол «go» особенный: в прошедшем времени он превращается в «went». ✏️
-4. Write the CORRECTION explanation in Russian EVEN WHEN the rest of your reply is in English — so the child clearly understands the mistake in their native language.
-5. Add at most ONE CORRECTION line, and only when there is a real mistake. NEVER add CORRECTION for a message the child wrote in Russian.
-6. Always be encouraging: react warmly to what the child said first, then gently correct.`;
+3. KEEP IT SHORT. The MAIN reply is at most ONE short sentence. It only reacts warmly to the child — it must NOT mention, quote, explain or correct any mistake. Do not write "Ты сказал…", "правильно…", "нужно…", "but…", "almost…" or any hint of the error in the main reply. All mistake-talk lives ONLY in the CORRECTION line.
+4. STAY ON THE SAME TASK until it's right. If you gave the child a sentence/task and their answer has a mistake, do NOT give a new sentence or task. Instead, in the main reply gently invite them to try the SAME one again (e.g. "Almost! Try once more 😊"). Move on to a NEW sentence ONLY after the current one is fully correct.
+5. CORRECTIONS. If the child makes ANY mistake in their English (grammar, verb tense, word choice, word order, or spelling), append at the very end, on a new line, in exactly this format:
+CORRECTION: <короткая подсказка НА РУССКОМ ЯЗЫКЕ>
+Keep it to ONE short sentence that points out WHAT is wrong and gives a gentle hint, so the child can fix it himself. NEVER write out the correct answer: do not show the corrected English word, phrase or sentence, and do not write «Правильно: …». Just nudge toward the right idea. Example:
+CORRECTION: Здесь нужно прошедшее время — вспомни особую форму глагола «go». ✏️
+6. The explanation is ALWAYS in Russian, even when the main reply is in English — so the child understands the mistake in their native language.
+7. Add at most ONE CORRECTION line, and only when there is a real mistake. NEVER add CORRECTION for a message the child wrote in Russian. NEVER repeat the correction's content inside the main reply.
+8. TONE: be friendly and gentle, never pushy or nagging. Don't lecture, don't pile on, don't repeat the same advice — one short warm reaction per turn is enough.
+9. Still NOTICE EVERY mistake: even when you keep the tone light, never let a real error pass without a CORRECTION line.
+10. PRAISE correct answers: when the child's English is fully correct (no CORRECTION needed), give a short, genuine compliment ("Perfect! 🌟", "Great sentence!", "Молодец, всё верно! 🎉"), then move on to the next sentence/task.`;
 
 function setBackend(b) {
   backend = b;
   ['deepseek','claude'].forEach(x => $('be-'+x).classList.toggle('active', x === b));
+}
+
+function setStt(e) {
+  sttEngine = e;
+  ['whisper','deepgram'].forEach(x => $('stt-'+x).classList.toggle('active', x === e));
 }
 
 function setVoiceMode(mode) {
@@ -397,6 +413,16 @@ async function speakElevenLabs(text, onEnd) {
 }
 
 // Убираем эмодзи/пиктограммы, чтобы TTS не зачитывал их вслух (на экране они остаются)
+function stripMarkdown(t) {
+  // DeepSeek любит выделять текст звёздочками (*слово*, **слово**) — убираем,
+  // чтобы они не отображались в чате и не зачитывались голосом.
+  return t.replace(/\*\*(.*?)\*\*/g, '$1')
+          .replace(/\*(.*?)\*/g, '$1')
+          .replace(/\*/g, '')
+          .replace(/[ \t]{2,}/g, ' ')
+          .trim();
+}
+
 function stripEmoji(t) {
   return t.replace(/[\p{Extended_Pictographic}\u{1F1E6}-\u{1F1FF}\u{FE0F}\u{20E3}]/gu, '')
           .replace(/\s{2,}/g, ' ').trim();
@@ -437,6 +463,8 @@ async function send() {
     let reply = full, correction = null;
     const ci = full.indexOf('CORRECTION:');
     if (ci !== -1) { reply = full.slice(0, ci).trim(); correction = full.slice(ci+11).trim(); }
+    reply = stripMarkdown(reply);
+    if (correction) correction = stripMarkdown(correction);
 
     addMsg(reply, 'ai');
     if (correction) { $('correction').style.display = 'block'; $('correction').textContent = '✏️ ' + correction; }
@@ -522,7 +550,7 @@ async function transcribe() {
   transcribing = true;
   setStatus('thinking'); face('thinking');
   try {
-    const res = await fetch('/proxy/stt', { method: 'POST', body: blob });
+    const res = await fetch('/proxy/stt?engine=' + sttEngine, { method: 'POST', body: blob });
     if (!res.ok) { const e = await res.json().catch(()=>({})); throw new Error(e.error?.message || 'HTTP '+res.status); }
     const data = await res.json();
     setStatus('ready'); face('happy');

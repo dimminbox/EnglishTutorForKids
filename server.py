@@ -29,6 +29,14 @@ DEEPSEEK_KEY = "sk-0743bbd7ff9141109bbb8282d5f5cc22"
 # ElevenLabs ключ — вставь свой (или оставь пустым для Browser TTS)
 ELEVENLABS_KEY = "ВСТАВЬ_СЮДА_ELEVENLABS_KEY"
 
+# STT-движок по умолчанию: 'whisper' (локально) или 'deepgram' (облако).
+# Из UI можно переключать на каждый запрос (?engine=...), это лишь дефолт.
+STT_ENGINE = 'whisper'
+
+# Deepgram API key (https://console.deepgram.com) — для облачного STT.
+# Модель nova-3 + language=multi: авто RU+EN, в т.ч. смена языка внутри фразы.
+DEEPGRAM_KEY = "d97bb6e358f8e63f784bab087863677b72382e3b"
+
 # Whisper (faster-whisper) — локальное распознавание речи с авто-определением языка.
 # 'base' — быстрее, 'small' — баланс, 'medium'/'large-v3' — точнее (желательно GPU).
 WHISPER_MODEL = 'small'
@@ -59,12 +67,14 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
 
     def do_POST(self):
-        if self.path == '/proxy/chat':
+        from urllib.parse import urlsplit
+        path = urlsplit(self.path).path   # без query (?engine=...)
+        if path == '/proxy/chat':
             self._handle_anthropic()
-        elif self.path == '/proxy/stt':
+        elif path == '/proxy/stt':
             self._handle_stt()
-        elif self.path.startswith('/proxy/elevenlabs/'):
-            voice_id = self.path.replace('/proxy/elevenlabs/', '')
+        elif path.startswith('/proxy/elevenlabs/'):
+            voice_id = path.replace('/proxy/elevenlabs/', '')
             length = int(self.headers.get('Content-Length', 0))
             body = self.rfile.read(length)
             self._forward_elevenlabs(voice_id, body)
@@ -193,41 +203,79 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(err)
 
+    def _send_json(self, obj, status=200):
+        resp_bytes = json.dumps(obj).encode()
+        self.send_response(status)
+        self.add_cors()
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', str(len(resp_bytes)))
+        self.end_headers()
+        self.wfile.write(resp_bytes)
+
     def _handle_stt(self):
-        import tempfile
+        from urllib.parse import urlsplit, parse_qs
+        engine = parse_qs(urlsplit(self.path).query).get('engine', [None])[0] or STT_ENGINE
+
         length = int(self.headers.get('Content-Length', 0))
         audio = self.rfile.read(length)
+        content_type = self.headers.get('Content-Type') or 'audio/webm'
 
+        print(f'  → STT [{engine}] ({len(audio)} bytes)', file=sys.stderr)
+        try:
+            if engine == 'deepgram':
+                text, language = self._stt_deepgram(audio, content_type)
+            else:
+                text, language = self._stt_whisper(audio)
+            print(f'  ✓ [{language}] {text!r}', file=sys.stderr)
+            self._send_json({"text": text, "language": language})
+        except urllib.error.HTTPError as e:
+            err_body = e.read()
+            print(f'  ✗ STT {e.code}: {err_body[:200]}', file=sys.stderr)
+            self._send_json({"error": {"type": "error",
+                             "message": err_body.decode('utf-8', 'replace')}}, status=e.code)
+        except Exception as e:
+            print(f'  ✗ {e}', file=sys.stderr)
+            self._send_json({"error": {"type": "error", "message": str(e)}}, status=500)
+
+    def _stt_whisper(self, audio):
+        import tempfile
         # Whisper читает файл, поэтому пишем blob во временный .webm
         with tempfile.NamedTemporaryFile(suffix='.webm', delete=False) as f:
             f.write(audio)
             path = f.name
-
-        print(f'  → Whisper ({len(audio)} bytes)', file=sys.stderr)
         try:
             model = get_whisper()
             # language=None → авто-определение языка (ru / en и т.д.)
             segments, info = model.transcribe(path, language=None, beam_size=1)
             text = ''.join(seg.text for seg in segments).strip()
-            print(f'  ✓ [{info.language}] {text!r}', file=sys.stderr)
-
-            resp_bytes = json.dumps({"text": text, "language": info.language}).encode()
-            self.send_response(200)
-            self.add_cors()
-            self.send_header('Content-Type', 'application/json')
-            self.send_header('Content-Length', str(len(resp_bytes)))
-            self.end_headers()
-            self.wfile.write(resp_bytes)
-        except Exception as e:
-            print(f'  ✗ {e}', file=sys.stderr)
-            err = json.dumps({"error": {"type": "error", "message": str(e)}}).encode()
-            self.send_response(500)
-            self.add_cors()
-            self.send_header('Content-Type', 'application/json')
-            self.end_headers()
-            self.wfile.write(err)
+            return text, info.language
         finally:
             os.unlink(path)
+
+    def _stt_deepgram(self, audio, content_type):
+        if not DEEPGRAM_KEY or 'ВСТАВЬ' in DEEPGRAM_KEY:
+            raise RuntimeError('Deepgram ключ не задан в server.py (DEEPGRAM_KEY)')
+        from urllib.parse import urlencode
+        params = urlencode({
+            'model': 'nova-3',
+            'language': 'multi',   # авто RU+EN, в т.ч. смена языка внутри фразы
+            'smart_format': 'true',
+            'punctuate': 'true',
+        })
+        req = urllib.request.Request(
+            f'https://api.deepgram.com/v1/listen?{params}',
+            data=audio,
+            headers={'Authorization': f'Token {DEEPGRAM_KEY}', 'Content-Type': content_type},
+            method='POST',
+        )
+        with urllib.request.urlopen(req) as resp:
+            data = json.loads(resp.read())
+        channel = data['results']['channels'][0]
+        alt = channel['alternatives'][0]
+        text = alt.get('transcript', '').strip()
+        langs = alt.get('languages') or ([channel['detected_language']]
+                                         if channel.get('detected_language') else [])
+        return text, (langs[0] if langs else 'multi')
 
     def _forward_elevenlabs(self, voice_id, body):
         if not ELEVENLABS_KEY or 'ВСТАВЬ' in ELEVENLABS_KEY:
@@ -264,10 +312,14 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
             self.wfile.write(err_body)
 
     def log_message(self, fmt, *args):
-        path = args[0].split()[1] if args else ''
-        code = args[1]
+        # request-лог: args[0] = строка вида "POST /path HTTP/1.1"; для send_error
+        # сюда прилетают int-аргументы — такие записи пропускаем.
+        if not args or not isinstance(args[0], str) or ' ' not in args[0]:
+            return
+        parts = args[0].split()
+        path, code = parts[1], (args[1] if len(args) > 1 else '')
         if not path.endswith(('.js', '.css', '.ico', '.png')):
-            print(f'  {args[0].split()[0]} {path} [{code}]')
+            print(f'  {parts[0]} {path} [{code}]')
 
 if __name__ == '__main__':
     if AI_BACKEND == 'deepseek':
@@ -283,6 +335,8 @@ if __name__ == '__main__':
             print('\n  ✗ claude CLI не найден.')
             sys.exit(1)
 
+    dg = 'настроен' if (DEEPGRAM_KEY and 'ВСТАВЬ' not in DEEPGRAM_KEY) else 'не настроен'
+    print(f'  STT по умолчанию: {STT_ENGINE}  (Whisper: {WHISPER_MODEL} · Deepgram: {dg})')
     print(f'  Открой: http://localhost:{PORT}/alex-tutor.html')
     if ELEVENLABS_KEY and 'ВСТАВЬ' not in ELEVENLABS_KEY:
         print(f'  ElevenLabs: {ELEVENLABS_KEY[:8]}...')
