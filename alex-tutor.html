@@ -206,17 +206,19 @@
     <button class="v-opt" id="opt-mute" onclick="setVoiceMode('mute')">Mute</button>
   </div>
 
-  <!-- AI BACKEND -->
+  <!-- AI BACKEND (Claude временно отключён, оставлен только DeepSeek)
   <div class="voice-toggle" id="backend-toggle">
     <button class="v-opt active" id="be-deepseek" onclick="setBackend('deepseek')">DeepSeek</button>
     <button class="v-opt" id="be-claude" onclick="setBackend('claude')">Claude Code</button>
   </div>
+  -->
 
-  <!-- STT ENGINE -->
+  <!-- STT ENGINE: Whisper убран из UI, используется только Deepgram
   <div class="voice-toggle" id="stt-toggle">
-    <button class="v-opt active" id="stt-whisper" onclick="setStt('whisper')">🎙 Whisper (локально)</button>
-    <button class="v-opt" id="stt-deepgram" onclick="setStt('deepgram')">🎙 Deepgram (облако)</button>
+    <button class="v-opt" id="stt-whisper" onclick="setStt('whisper')">🎙 Whisper (локально)</button>
+    <button class="v-opt active" id="stt-deepgram" onclick="setStt('deepgram')">🎙 Deepgram (облако)</button>
   </div>
+  -->
 
   <!-- CHAT -->
   <div id="chat-box">
@@ -246,8 +248,9 @@ const $ = id => document.getElementById(id);
 const ELEVEN_VOICE_ID = '21m00Tcm4TlvDq8ikWAM'; // Rachel
 let voiceMode = 'browser';
 let backend = 'deepseek';   // 'deepseek' | 'claude' — переключается тумблером
-let sttEngine = 'whisper';  // 'whisper' | 'deepgram' — движок распознавания речи
+let sttEngine = 'deepgram';  // движок распознавания речи (Whisper временно убран из UI)
 let busy = false, blinkTimer, lipTimer, currentUtterance = null;
+let speaking = false, speechToken = 0, currentAudio = null, muteTimer = null;
 let history = [];
 
 const SYSTEM = `You are Lily — a girl, a warm and patient English tutor for CHILDREN. You are female: always refer to yourself in the feminine. When you speak or write in Russian, use feminine grammatical forms about yourself («я рада», «я сказала», «я думаю», never «рад»/«сказал»). Rules:
@@ -350,6 +353,7 @@ function splitByLang(text) {
 function speakBrowser(text, onEnd) {
   if (!window.speechSynthesis) { onEnd(); return; }
   window.speechSynthesis.cancel();
+  const myToken = speechToken;   // если озвучку прервут — этот токen устареет
 
   const voices = window.speechSynthesis.getVoices();
   const ruVoice = voices.find(v => v.lang === 'ru-RU' && v.name.includes('Google'))
@@ -363,6 +367,7 @@ function speakBrowser(text, onEnd) {
   let i = 0;
 
   function speakNext() {
+    if (myToken !== speechToken) return;   // нас прервали — молча выходим
     if (i >= segments.length) { lip(false); onEnd(); return; }
     const seg = segments[i++];
     const utt = new SpeechSynthesisUtterance(seg.text);
@@ -387,6 +392,7 @@ function speakBrowser(text, onEnd) {
 
 async function speakElevenLabs(text, onEnd) {
   const lang = detectLang(text);
+  const myToken = speechToken;   // если прервут (нажат микрофон) — токен устареет
   // ElevenLabs multilingual model handles both ru and en automatically
   try {
     const res = await fetch(`/proxy/elevenlabs/${ELEVEN_VOICE_ID}`, {
@@ -401,14 +407,16 @@ async function speakElevenLabs(text, onEnd) {
     if (!res.ok) throw new Error('ElevenLabs ' + res.status);
     const blob = await res.blob();
     const url = URL.createObjectURL(blob);
+    if (myToken !== speechToken) { URL.revokeObjectURL(url); return; }  // уже прервали, пока грузилось
     const audio = new Audio(url);
+    currentAudio = audio;
     audio.onplay = () => lip(true);
-    audio.onended = () => { lip(false); URL.revokeObjectURL(url); onEnd(); };
-    audio.onerror = () => { lip(false); onEnd(); };
+    audio.onended = () => { currentAudio = null; lip(false); URL.revokeObjectURL(url); if (myToken === speechToken) onEnd(); };
+    audio.onerror = () => { currentAudio = null; lip(false); if (myToken === speechToken) onEnd(); };
     await audio.play();
   } catch(e) {
     console.warn('ElevenLabs failed, falling back:', e.message);
-    speakBrowser(text, onEnd);
+    if (myToken === speechToken) speakBrowser(text, onEnd);
   }
 }
 
@@ -431,9 +439,27 @@ function stripEmoji(t) {
 function speak(text, onEnd) {
   text = stripEmoji(text);
   if (!text) { onEnd(); return; }   // остался один смайлик — нечего озвучивать
-  if (voiceMode === 'mute') { lip(true); setTimeout(() => { lip(false); onEnd(); }, Math.max(1400, text.length*50)); return; }
+  if (voiceMode === 'mute') {
+    const myToken = speechToken;
+    lip(true);
+    muteTimer = setTimeout(() => { lip(false); if (myToken === speechToken) onEnd(); }, Math.max(1400, text.length*50));
+    return;
+  }
   if (voiceMode === 'eleven') { speakElevenLabs(text, onEnd); return; }
   speakBrowser(text, onEnd);
+}
+
+// Прервать текущую речь Лили (например, когда ребёнок нажал микрофон).
+function stopSpeaking() {
+  speechToken++;   // инвалидируем все запущенные/отложенные коллбэки озвучки
+  try { if (window.speechSynthesis) window.speechSynthesis.cancel(); } catch(_) {}
+  if (currentAudio) { try { currentAudio.pause(); } catch(_) {} currentAudio = null; }
+  clearTimeout(muteTimer);
+  lip(false);
+  speaking = false;
+  busy = false;
+  $('send-btn').disabled = false;
+  face('happy'); setStatus('ready');
 }
 
 // --- SEND ---
@@ -470,8 +496,9 @@ async function send() {
     if (correction) { $('correction').style.display = 'block'; $('correction').textContent = '✏️ ' + correction; }
     setStatus('speaking'); face('speaking');
 
-    const finish = () => { face('happy'); setStatus('ready'); busy = false; $('send-btn').disabled = false; };
+    const finish = () => { speaking = false; face('happy'); setStatus('ready'); busy = false; $('send-btn').disabled = false; };
     // Сначала озвучиваем английский ответ, затем — русское объяснение ошибки
+    speaking = true;
     speak(reply, () => { if (correction) speak(correction, finish); else finish(); });
 
   } catch(e) {
@@ -501,6 +528,7 @@ function setupMic() {
 
   const start = async (ev) => {
     ev.preventDefault();
+    if (speaking) stopSpeaking();   // нажали микрофон во время речи Лили — прерываем её
     if (busy || transcribing || pressing) return;
     pressing = true;
     micBtn.classList.add('recording');

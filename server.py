@@ -31,7 +31,7 @@ ELEVENLABS_KEY = "ВСТАВЬ_СЮДА_ELEVENLABS_KEY"
 
 # STT-движок по умолчанию: 'whisper' (локально) или 'deepgram' (облако).
 # Из UI можно переключать на каждый запрос (?engine=...), это лишь дефолт.
-STT_ENGINE = 'whisper'
+STT_ENGINE = 'deepgram'
 
 # Deepgram API key (https://console.deepgram.com) — для облачного STT.
 # Модель nova-3 + language=multi: авто RU+EN, в т.ч. смена языка внутри фразы.
