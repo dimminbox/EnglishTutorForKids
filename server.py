@@ -76,7 +76,9 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
         body = self.rfile.read(length)
         payload = json.loads(body)
 
-        if AI_BACKEND == 'deepseek':
+        # backend можно переключать из UI (поле "backend"); иначе берём значение по умолчанию
+        backend = payload.get('backend') or AI_BACKEND
+        if backend == 'deepseek':
             self._handle_deepseek(payload)
         else:
             self._handle_claude_cli(payload)
@@ -162,7 +164,11 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
             cmd = ['claude', '-p', prompt, '--output-format', 'json']
             if system:
                 cmd += ['--system-prompt', system]
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            # Запускаем в нейтральной директории, чтобы CLI не подтягивал CLAUDE.md проекта
+            # — иначе тутор «знал» бы про кодовую базу и сравнение моделей было бы нечестным.
+            import tempfile
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=60,
+                                    cwd=tempfile.gettempdir())
             if result.returncode != 0:
                 raise RuntimeError(result.stderr or 'claude CLI error')
             cli_out = json.loads(result.stdout)
