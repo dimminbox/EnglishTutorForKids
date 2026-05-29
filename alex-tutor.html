@@ -60,6 +60,13 @@
   .msg.ai  { background: var(--surface2); color: var(--text); align-self: flex-start; border: 0.5px solid var(--border); }
   .msg.user { background: var(--green-light); color: #085041; align-self: flex-end; border: 0.5px solid var(--green-border); }
   .msg.error { background: #FCEBEB; color: #A32D2D; align-self: flex-start; border: 0.5px solid #F7C1C1; font-size: 13px; }
+  .msg.ai { display: flex; align-items: flex-start; gap: 8px; }
+  .msg.ai .play-btn {
+    flex: none; border: none; background: transparent; cursor: pointer;
+    font-size: 14px; line-height: 1.6; padding: 0; opacity: 0.45; transition: opacity .15s;
+  }
+  .msg.ai .play-btn:hover { opacity: 1; }
+  .msg.ai .play-btn.playing { opacity: 1; }
 
   #correction {
     display: none; padding: 10px 14px; border-radius: var(--radius-sm);
@@ -223,7 +230,7 @@
   <!-- CHAT -->
   <div id="chat-box">
     <div id="messages">
-      <div class="msg ai">Hi! I'm Lily, your English tutor 👋 What would you like to talk about today?</div>
+      <div class="msg ai"><span>Hi! I'm Lily, your English tutor 👋 What would you like to talk about today?</span><button class="play-btn" title="Прослушать / Listen" onclick="playMessage(this.previousSibling.textContent, this)">🔊</button></div>
     </div>
     <div id="correction"></div>
     <div id="input-row">
@@ -251,6 +258,7 @@ let backend = 'deepseek';   // 'deepseek' | 'claude' — переключает�
 let sttEngine = 'deepgram';  // движок распознавания речи (Whisper временно убран из UI)
 let busy = false, blinkTimer, lipTimer, currentUtterance = null;
 let speaking = false, speechToken = 0, currentAudio = null, muteTimer = null;
+const ttsCache = new Map();   // text -> objectURL: кэш mp3 от ElevenLabs, чтобы повтор не дёргал API
 let history = [];
 
 const SYSTEM = `You are Lily — a girl, a warm and patient English tutor for CHILDREN. You are female: always refer to yourself in the feminine. When you speak or write in Russian, use feminine grammatical forms about yourself («я рада», «я сказала», «я думаю», never «рад»/«сказал»). Rules:
@@ -314,9 +322,35 @@ function setStatus(s) {
 function addMsg(text, role) {
   const el = document.createElement('div');
   el.className = 'msg ' + role;
-  el.textContent = text;
+  if (role === 'ai') {
+    // текст + кнопка прослушивания (повторно озвучивает это сообщение)
+    const span = document.createElement('span');
+    span.textContent = text;
+    el.appendChild(span);
+    const btn = document.createElement('button');
+    btn.className = 'play-btn';
+    btn.title = 'Прослушать / Listen';
+    btn.textContent = '🔊';
+    btn.onclick = () => playMessage(text, btn);
+    el.appendChild(btn);
+  } else {
+    el.textContent = text;
+  }
   $('messages').appendChild(el);
   $('messages').scrollTop = $('messages').scrollHeight;
+}
+
+// Повторно озвучить сообщение по нажатию 🔊 рядом с ним.
+function playMessage(text, btn) {
+  stopSpeaking();                       // если Лили сейчас говорит — прерываем
+  if (voiceMode === 'mute') return;     // в немом режиме слушать нечего
+  speaking = true;
+  setStatus('speaking'); face('speaking');
+  if (btn) btn.classList.add('playing');
+  speak(text, () => {
+    speaking = false; setStatus('ready'); face('happy');
+    if (btn) btn.classList.remove('playing');
+  });
 }
 
 function setInput(text) { $('user-input').value = text; $('user-input').focus(); }
@@ -391,8 +425,22 @@ function speakBrowser(text, onEnd) {
 }
 
 async function speakElevenLabs(text, onEnd) {
-  const lang = detectLang(text);
   const myToken = speechToken;   // если прервут (нажат микрофон) — токен устареет
+
+  // Проигрывание готового URL (object URL из кэша). URL не отзываем — он живёт в ttsCache для повтора.
+  const playUrl = (url) => {
+    if (myToken !== speechToken) return;   // уже прервали
+    const audio = new Audio(url);
+    currentAudio = audio;
+    audio.onplay = () => lip(true);
+    audio.onended = () => { currentAudio = null; lip(false); if (myToken === speechToken) onEnd(); };
+    audio.onerror = () => { currentAudio = null; lip(false); if (myToken === speechToken) onEnd(); };
+    audio.play();
+  };
+
+  const cached = ttsCache.get(text);
+  if (cached) { playUrl(cached); return; }   // повторное прослушивание — без обращения к API
+
   // ElevenLabs multilingual model handles both ru and en automatically
   try {
     const res = await fetch(`/proxy/elevenlabs/${ELEVEN_VOICE_ID}`, {
@@ -407,13 +455,14 @@ async function speakElevenLabs(text, onEnd) {
     if (!res.ok) throw new Error('ElevenLabs ' + res.status);
     const blob = await res.blob();
     const url = URL.createObjectURL(blob);
-    if (myToken !== speechToken) { URL.revokeObjectURL(url); return; }  // уже прервали, пока грузилось
-    const audio = new Audio(url);
-    currentAudio = audio;
-    audio.onplay = () => lip(true);
-    audio.onended = () => { currentAudio = null; lip(false); URL.revokeObjectURL(url); if (myToken === speechToken) onEnd(); };
-    audio.onerror = () => { currentAudio = null; lip(false); if (myToken === speechToken) onEnd(); };
-    await audio.play();
+    ttsCache.set(text, url);
+    // ограничиваем кэш, чтобы не копить object URL бесконечно
+    if (ttsCache.size > 12) {
+      const oldest = ttsCache.keys().next().value;
+      URL.revokeObjectURL(ttsCache.get(oldest));
+      ttsCache.delete(oldest);
+    }
+    playUrl(url);
   } catch(e) {
     console.warn('ElevenLabs failed, falling back:', e.message);
     if (myToken === speechToken) speakBrowser(text, onEnd);
